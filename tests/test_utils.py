@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from wfdl.utils import fetch
+from wfdl.utils import _download, _fetch
 
 
 class TestFetchHTTPStatus:
@@ -34,7 +34,7 @@ class TestFetchHTTPStatus:
         respx.get(url).mock(side_effect=side_effect)
 
         with patch("asyncio.sleep", side_effect=fake_sleep):
-            response = await fetch(
+            response = await _fetch(
                 url,
                 max_retries=5,
                 backoff=0.1,
@@ -55,7 +55,7 @@ class TestFetchHTTPStatus:
         )
 
         with caplog.at_level("ERROR"):
-            response = await fetch(
+            response = await _fetch(
                 url,
                 max_retries=3,
                 backoff=0.1
@@ -71,7 +71,7 @@ class TestFetchHTTPStatus:
         respx.get(url).mock(side_effect=httpx.InvalidURL("bad url"))
 
         with caplog.at_level("ERROR"):
-            response = await fetch(
+            response = await _fetch(
                 url,
                 max_retries=5,
                 backoff=0.1
@@ -103,7 +103,7 @@ class TestFetchHTTPStatus:
         respx.get(url).mock(side_effect=side_effect)
 
         with patch("asyncio.sleep", side_effect=fake_sleep):
-            response = await fetch(
+            response = await _fetch(
                 url,
                 max_retries=3,
                 backoff=0.1
@@ -128,7 +128,7 @@ class TestFetchHTTPStatus:
 
         respx.get(url).mock(side_effect=side_effect)
 
-        response = await fetch(
+        response = await _fetch(
             url,
             max_retries=3,
             backoff=0.1,
@@ -153,7 +153,7 @@ class TestFetchHTTPStatus:
 
         respx.get(url).mock(side_effect=side_effect)
 
-        response = await fetch(
+        response = await _fetch(
             url,
             max_retries=3,
             backoff=0.1,
@@ -177,7 +177,7 @@ class TestFetchHTTPStatus:
 
         respx.get(url).mock(side_effect=side_effect)
 
-        response = await fetch(
+        response = await _fetch(
             url,
             max_retries=3,
             backoff=0.1
@@ -212,7 +212,7 @@ class TestFetchHTTPStatus:
         respx.get(url).mock(side_effect=side_effect)
 
         with patch("asyncio.sleep", side_effect=fake_sleep):
-            response = await fetch(
+            response = await _fetch(
                 url,
                 max_retries=5,
                 backoff=0.1,
@@ -222,3 +222,124 @@ class TestFetchHTTPStatus:
         assert response is not None
         assert response.status_code == 200
         assert slept == [0.1, 0.1]  # constant backoff
+
+    @pytest.mark.asyncio
+    async def test_download_successful(self, tmp_path):
+        url = "https://example.com/image.jpg"
+        content = b"fakejpegcontent"
+
+        async def fake_fetch(url, **kwargs):
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=content,
+                request=httpx.Request("GET", url),
+            )
+
+        path = tmp_path / "image.jpg"
+        result = await _download(
+            str(url),
+            str(path),
+            fetch_func=fake_fetch,
+            fetch_kwargs={},
+            sanitize=False
+        )
+
+        assert result is str(path)
+        assert path.exists()
+        assert path.read_bytes() == content
+
+    @pytest.mark.asyncio
+    async def test_download_file_exists_skips(self, tmp_path):
+        path = tmp_path / "existing.jpg"
+        path.write_bytes(b"exists")
+
+        async def fake_fetch(url, **kwargs):
+            raise AssertionError("Should not call fetch")
+
+        result = await _download(
+            "https://example.com/image.jpg",
+            str(path),
+            fetch_func=fake_fetch, fetch_kwargs={}
+        )
+
+        assert result is str(path)
+        assert path.read_bytes() == b"exists"
+
+    @pytest.mark.asyncio
+    async def test_download_non_jpeg_warns(self, tmp_path, caplog):
+        content = b"pngcontent"
+
+        async def fake_fetch(url, **kwargs):
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/png"},
+                content=content,
+                request=httpx.Request("GET", url),
+            )
+
+        path = tmp_path / "image.png"
+
+        with caplog.at_level("WARNING"):
+            result = await _download(
+                "https://example.com/image.png",
+                str(path),
+                fetch_func=fake_fetch, fetch_kwargs={}
+            )
+
+        assert result == str(path)
+        assert any("not JPEG" in msg for msg in caplog.messages)
+        assert path.read_bytes() == content
+
+    @pytest.mark.asyncio
+    async def test_download_fetch_returns_none(self, tmp_path, caplog):
+        async def fake_fetch(url, **kwargs):
+            return None
+
+        path = tmp_path / "image.jpg"
+
+        with caplog.at_level("ERROR"):
+            result = await _download(
+                "https://example.com/image.jpg",
+                str(path),
+                fetch_func=fake_fetch, fetch_kwargs={}
+            )
+
+        assert result is None
+        assert not path.exists()
+        assert any("Failed to fetch" in msg for msg in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_download_sanitize_called(self, tmp_path, monkeypatch):
+        url = "https://example.com/image.jpg"
+        content = b"fakejpegcontent"
+
+        async def fake_fetch(url, **kwargs):
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=content,
+                request=httpx.Request("GET", url),
+            )
+
+        path = tmp_path / "image.jpg"
+
+        sanitize_called = {}
+
+        # Patch _sanitize_jpeg to track call
+        def fake_sanitize(p):
+            sanitize_called["called"] = p
+
+        monkeypatch.setattr("wfdl.utils._sanitize_jpeg", fake_sanitize)
+
+        result = await _download(
+            str(url),
+            str(path),
+            fetch_func=fake_fetch,
+            fetch_kwargs={},
+            sanitize=True
+        )
+
+        assert result == str(path)
+        assert path.exists()
+        assert sanitize_called.get("called") == str(path)

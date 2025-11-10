@@ -1,8 +1,9 @@
-# import asyncio
+import asyncio
 import logging
 from typing import Optional
 
-from .utils import fetch
+from .extractor import WikiFeetExtractor
+from .utils import _download, _fetch
 
 
 class WikiFeetClient:
@@ -23,8 +24,18 @@ class WikiFeetClient:
             self.logger.addHandler(handler)
 
     async def download(self, url: str | tuple[str, ...]) -> None:
+        extractor = WikiFeetExtractor()
+        response = await _fetch(url)
+        data = extractor._extract_subject_profile(response.text)
 
-        await fetch(url, logger=self.logger)
+        async with asyncio.TaskGroup() as tg:
+            for image in data["images"]:
+                tg.create_task(
+                    _download(
+                        image["url"],
+                        f"./_tmp/{image['url'].split('/')[-1]}"
+                    )
+                )
 
     def search(
         self,
@@ -39,4 +50,7 @@ class WikiFeetClient:
 # so API and args like `--download` work without users handling asyncio.
 # Keep async private to hint that direct import is advanced usage.
 if __name__ == "__main__":
-    pass
+    import sys
+
+    wf = WikiFeetClient()
+    asyncio.run(wf.download(sys.argv[1]))

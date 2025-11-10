@@ -1,8 +1,12 @@
 import asyncio
+import importlib.metadata
 import logging
-from typing import Optional
+import os
+from typing import Any, Callable, Optional
 
 import httpx
+import piexif
+from PIL import Image
 
 # Transient errors (retryable)
 TRANSIENT_ERRORS = (
@@ -42,7 +46,25 @@ FATAL_ERRORS = (
 )
 
 
-async def fetch(
+def _sanitize_jpeg(path: str) -> None:
+
+    # Remove all existing EXIF
+    piexif.remove(path, path)
+
+    image = Image.open(path)
+
+    # Determine WFDL version
+    try:
+        version = importlib.metadata.version("wfdl")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+
+    comment = f"Downloaded with WFDL v{version}".encode("utf-8")
+
+    image.save(path, "JPEG", comment=comment)
+
+
+async def _fetch(
     url: str,
     timeout: float = 10.0,
     backoff: float = 3.0,
@@ -57,6 +79,7 @@ async def fetch(
     attempt = 1
     delay = backoff
 
+    # TODO: Reuse one AsyncClient for all fetches for speed.
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
         proxy=proxy
@@ -123,3 +146,49 @@ async def fetch(
 
     logger.error(f"Max retries exceeded for URL: `{url}`, giving up.")
     return None
+
+
+async def _download(
+    url: str,
+    path: str,
+    fetch_func: Callable[..., Any] = _fetch,
+    fetch_kwargs: dict[str, Any] = {},
+    logger: logging.Logger = logging.getLogger("WikiFeetClient"),
+    force_download: bool = False,
+    sanitize: bool = True
+) -> Optional[str]:
+    """Download a file to the given path using the provided fetch function."""
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if not force_download and os.path.exists(path):
+        logger.info(f"File already exists, skipping: {path}")
+        return path
+
+    response = await fetch_func(url, **fetch_kwargs)
+    if not response:
+        logger.error(f"Failed to fetch `{url}`, skipping download.")
+        return
+
+    content_type = response.headers.get(
+        "content-type", ""
+    ).split(";")[0].lower()
+    if content_type != "image/jpeg":
+        is_jpeg = False
+        logger.warning(
+            f"Downloaded content from `{url}` is not JPEG "
+            f"(Content-Type: {content_type})"
+        )
+    else:
+        is_jpeg = True
+
+    content = await response.aread()
+
+    with open(path, "wb") as f:
+        f.write(content)
+
+    if is_jpeg and sanitize:
+        _sanitize_jpeg(path)
+
+    logger.info(f"Downloaded successfully: {path}")
+    return path
