@@ -27,3 +27,6 @@ test = [
     "respx (>=0.22.0,<0.23.0)",
     "pytest-asyncio (>=1.2.0,<2.0.0)"
 ]
+
+[tool.poetry.scripts]
+wfdl = "wfdl.cli:main"

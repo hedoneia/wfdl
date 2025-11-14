@@ -66,9 +66,9 @@ def _sanitize_jpeg(path: str) -> None:
 
 async def _fetch(
     url: str,
-    timeout: float = 10.0,
-    backoff: float = 3.0,
-    max_retries: int = 5,
+    timeout: float = 30.0,
+    backoff: float = 1.0,
+    max_retries: int = 10,
     max_backoff: float = 30.0,
     exponential_backoff: bool = True,
     proxy: Optional[str | httpx.Proxy] = None,

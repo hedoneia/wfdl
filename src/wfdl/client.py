@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Optional
+import os
+from typing import Optional, Sequence
 
 from .extractor import WikiFeetExtractor
 from .utils import _download, _fetch
@@ -22,20 +23,39 @@ class WikiFeetClient:
                 handler = logging.StreamHandler()
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
+        self.extractor = WikiFeetExtractor()
 
-    async def download(self, url: str | tuple[str, ...]) -> None:
-        extractor = WikiFeetExtractor()
+    async def _solo_download(
+        self,
+        url: str,
+        path: Optional[str] = os.getcwd()
+    ) -> None:
         response = await _fetch(url)
-        data = extractor._extract_subject_profile(response.text)
-
+        data = self.extractor._extract_subject_profile(response.text)
+        path = os.path.join(path, url.rstrip("/").split("/")[-1])
         async with asyncio.TaskGroup() as tg:
             for image in data["images"]:
+                filename = image['url'].split('/')[-1]
                 tg.create_task(
                     _download(
                         image["url"],
-                        f"./_tmp/{image['url'].split('/')[-1]}"
+                        os.path.join(path, filename)
                     )
                 )
+
+    async def _multi_download(
+        self,
+        urls: Sequence[str],
+        path: Optional[str] = os.getcwd()
+    ) -> None:
+        async with asyncio.TaskGroup() as tg:
+            for url in urls:
+                tg.create_task(
+                    self._solo_download(url, path)
+                )
+
+    def download(self, urls: Sequence[str], path: str) -> None:
+        asyncio.run(self._multi_download(urls, path))
 
     def search(
         self,
@@ -43,14 +63,3 @@ class WikiFeetClient:
         filters: Optional[dict[str, str]] = None
     ) -> list[str]:
         pass
-
-
-# TODO:
-# Add sync wrapper (e.g. `download()`) around async (`__async_download`)
-# so API and args like `--download` work without users handling asyncio.
-# Keep async private to hint that direct import is advanced usage.
-if __name__ == "__main__":
-    import sys
-
-    wf = WikiFeetClient()
-    asyncio.run(wf.download(sys.argv[1]))
