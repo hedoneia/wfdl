@@ -21,4 +21,7 @@ def main():
     args = parser.parse_args()
 
     client = WikiFeetClient()
-    client.download(args.urls, args.path or os.getcwd())
+    try:
+        client.download(args.urls, args.path or os.getcwd())
+    except KeyboardInterrupt:
+        pass

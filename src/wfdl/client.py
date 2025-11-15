@@ -8,7 +8,11 @@ from .utils import _download, _fetch
 
 
 class WikiFeetClient:
-    def __init__(self, log_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        log_path: Optional[str] = None,
+        semaphore: int = 10
+    ) -> None:
         self.logger = logging.getLogger("WikiFeetClient")
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
@@ -24,6 +28,7 @@ class WikiFeetClient:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         self.extractor = WikiFeetExtractor()
+        self._semaphore = asyncio.Semaphore(semaphore)
 
     async def _solo_download(
         self,
@@ -36,12 +41,15 @@ class WikiFeetClient:
         async with asyncio.TaskGroup() as tg:
             for image in data["images"]:
                 filename = image['url'].split('/')[-1]
-                tg.create_task(
-                    _download(
-                        image["url"],
-                        os.path.join(path, filename)
-                    )
-                )
+
+                async def _semaphore_download(
+                    url=image["url"],
+                    filename=filename
+                ):
+                    async with self._semaphore:
+                        await _download(url, os.path.join(path, filename))
+
+                tg.create_task(_semaphore_download())
 
     async def _multi_download(
         self,
@@ -50,9 +58,12 @@ class WikiFeetClient:
     ) -> None:
         async with asyncio.TaskGroup() as tg:
             for url in urls:
-                tg.create_task(
-                    self._solo_download(url, path)
-                )
+
+                async def _semaphore_download(url=url):
+                    async with self._semaphore:
+                        await self._solo_download(url, path)
+
+                tg.create_task(_semaphore_download())
 
     def download(self, urls: Sequence[str], path: str) -> None:
         asyncio.run(self._multi_download(urls, path))
