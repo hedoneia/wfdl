@@ -24,7 +24,6 @@ TRANSIENT_ERRORS = (
         httpx.TooManyRedirects,
         httpx.DecodingError,
     ],
-
     # This error type is an exception :)
     # HTTPStatusError can be both transient (5xx) or fatal (4xx);
     # handled specially in fetch() to retry only on 5xx.
@@ -46,12 +45,22 @@ FATAL_ERRORS = (
 )
 
 
-def _sanitize_jpeg(path: str) -> None:
+def _sanitize_jpeg(path: str) -> bool:
+    try:
+        piexif.remove(path, path)
+    except piexif._exceptions.InvalidImageDataError:
+        return False
 
-    # Remove all existing EXIF
-    piexif.remove(path, path)
+    try:
+        with Image.open(path) as img:
+            img.verify()
+    except Exception:
+        return False
 
-    image = Image.open(path)
+    try:
+        image = Image.open(path)
+    except Exception:
+        return False
 
     # Determine WFDL version
     try:
@@ -61,12 +70,17 @@ def _sanitize_jpeg(path: str) -> None:
 
     comment = f"Downloaded with WFDL v{version}".encode("utf-8")
 
-    image.save(path, "JPEG", comment=comment)
+    try:
+        image.save(path, "JPEG", comment=comment)
+    except Exception:
+        return False
+
+    return True
 
 
 async def _fetch(
     url: str,
-    timeout: float = 30.0,
+    timeout: float = 50.0,
     backoff: float = 1.0,
     max_retries: int = 10,
     max_backoff: float = 30.0,
@@ -80,29 +94,20 @@ async def _fetch(
     delay = backoff
 
     # TODO: Reuse one AsyncClient for all fetches for speed.
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
-        proxy=proxy
-    ) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), proxy=proxy) as client:
         while attempt <= max_retries:
             try:
                 response = await client.get(url)
                 response.raise_for_status()
                 logger.info(
-                    f"Fetched URL successfully "
-                    f"({response.status_code}): `{url}` "
+                    f"Fetched URL successfully " f"({response.status_code}): `{url}` "
                 )
                 return response
 
             except TRANSIENT_ERRORS as exc:
-                status = getattr(
-                    getattr(exc, "response", None), "status_code", None
-                )
+                status = getattr(getattr(exc, "response", None), "status_code", None)
                 # Special handling for HTTPStatusError!
-                if (
-                    isinstance(exc, httpx.HTTPStatusError)
-                    and status is not None
-                ):
+                if isinstance(exc, httpx.HTTPStatusError) and status is not None:
                     if 500 <= status < 600:
                         logger.warning(
                             f"{type(exc).__name__} ({status}) "
@@ -138,9 +143,7 @@ async def _fetch(
 
             except FATAL_ERRORS as exc:
                 logger.error(
-                    f"{type(exc).__name__} "
-                    f"fetching URL: `{url}`, "
-                    "giving up!"
+                    f"{type(exc).__name__} " f"fetching URL: `{url}`, " "giving up!"
                 )
                 return None
 
@@ -155,7 +158,7 @@ async def _download(
     fetch_kwargs: dict[str, Any] = {},
     logger: logging.Logger = logging.getLogger("WikiFeetClient"),
     force_download: bool = False,
-    sanitize: bool = True
+    sanitize: bool = True,
 ) -> Optional[str]:
     """Download a file to the given path using the provided fetch function."""
 
@@ -170,9 +173,7 @@ async def _download(
         logger.error(f"Failed to fetch `{url}`, skipping download.")
         return
 
-    content_type = response.headers.get(
-        "content-type", ""
-    ).split(";")[0].lower()
+    content_type = response.headers.get("content-type", "").split(";")[0].lower()
     if content_type != "image/jpeg":
         is_jpeg = False
         logger.warning(
@@ -188,7 +189,9 @@ async def _download(
         f.write(content)
 
     if is_jpeg and sanitize:
-        _sanitize_jpeg(path)
+        sanitized = _sanitize_jpeg(path)
+        if not sanitized:
+            logger.warning(f"Sanitization failed, dropping file: {path}")
 
     logger.info(f"Downloaded successfully: {path}")
     return path
